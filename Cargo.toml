@@ -1,0 +1,8 @@
+[package]
+name = "zj-session-hook"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+zellij-tile = "0.43"
+uuid = { version = "1", features = ["js"] }

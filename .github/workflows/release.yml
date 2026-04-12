@@ -1,0 +1,69 @@
+---
+name: Release
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+permissions:
+  contents: write
+
+env:
+  TOOLCHAIN: 1.94.1
+
+
+jobs:
+  build-release:
+    name: build-release
+    runs-on: ubuntu-latest
+    env:
+      RUST_BACKTRACE: 1
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+        with:
+          fetch-tags: false # https://github.com/actions/checkout/issues/1467
+
+      - name: Install WASI SDK
+        run: |
+          wget https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-20/wasi-sdk-20.0-linux.tar.gz
+          tar -xzf wasi-sdk-20.0-linux.tar.gz
+          mv wasi-sdk-20.0 /opt/wasi-sdk
+        env:
+          WASI_SDK_PATH: /opt/wasi-sdk
+
+      - run: git fetch --tags --all --force && git pull origin ${{ github.ref }}  --unshallow --force
+        name: Fetch tags manually as a workaround. See https://github.com/actions/checkout/issues/1467
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4f647fc679bcd3b11499ccb42104547c83dabe96 # stable
+        with:
+          profile: minimal
+          override: true
+          toolchain:  ${{ env.TOOLCHAIN }}
+          target: wasm32-wasip1
+        env:
+          WASI_SDK_PATH: /opt/wasi-sdk
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Generate a changelog
+        uses: orhun/git-cliff-action@c93ef52f3d0ddcdcc9bd5447d98d458a11cd4f72 # v3
+        id: git-cliff
+        with:
+          config: cliff.toml
+          args: -vv --latest --strip header
+        env:
+          OUTPUT: CHANGES.md
+
+      - name: Create release
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          draft: true
+          body: ${{ steps.git-cliff.outputs.content }}
+          prerelease: false
+          files: |
+            ./target/wasm32-wasip1/release/zj-hooker.wasm

@@ -1,0 +1,57 @@
+---
+on: push
+name: Test & Lint
+permissions:
+  contents: read
+
+# Make sure CI fails on all warnings, including Clippy lints
+env:
+  RUSTFLAGS: "-Dwarnings"
+  TOOLCHAIN: 1.94.1
+
+jobs:
+  clippy_check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+
+      - name: Install WASI SDK
+        run: |
+          wget https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-20/wasi-sdk-20.0-linux.tar.gz
+          tar -xzf wasi-sdk-20.0-linux.tar.gz
+          mv wasi-sdk-20.0 /opt/wasi-sdk
+        env:
+          WASI_SDK_PATH: /opt/wasi-sdk
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
+        with:
+          toolchain: ${{ env.TOOLCHAIN }}
+          target: wasm32-wasip1
+          components: clippy
+
+      - name: Run Clippy
+        uses: clechasseur/rs-clippy-check@b418607012136b974dc5c880877df721d630bbc1 # v3
+        with:
+          args: --all-features --lib
+          toolchain: ${{ env.TOOLCHAIN }}"
+
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - uses: jcbhmr/setup-wasmtime@960c367a99921eb0b02f5778fce9ae8f110bf0f0 # v2
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4f647fc679bcd3b11499ccb42104547c83dabe96 # stable
+        with:
+          toolchain: ${{ env.TOOLCHAIN }}"
+          target: wasm32-wasip1
+        env:
+          WASI_SDK_PATH: /opt/wasi-sdk
+
+      - name: Install cargo wasi
+        run: cargo install --locked cargo-nextest
+
+      - name: Run tests
+        run: cargo nextest run --lib

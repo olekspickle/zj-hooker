@@ -33,7 +33,7 @@ jobs:
       - name: Run Clippy
         uses: clechasseur/rs-clippy-check@b418607012136b974dc5c880877df721d630bbc1 # v3
         with:
-          args: --all-features --lib
+          args: --all-features
           toolchain: ${{ env.TOOLCHAIN }}
 
   tests:

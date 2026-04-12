@@ -8,9 +8,12 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   TOOLCHAIN: 1.94.1
-
 
 jobs:
   build-release:

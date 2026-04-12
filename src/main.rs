@@ -4,98 +4,126 @@
 //!
 //! # Example configuration
 //! ```kdl
-//!
-//! plugin location="file:~/zellij-plugins/zj-hooker.wasm" {
-//!     "session_pattern" "main"           # exact match
-//!     "session_pattern" "dev*"            # prefix match
-//!     "session_pattern" "*dev"            # suffix match
-//!     "session_pattern" "*dev*"          # contains match
-//!     "on_attach" "echo 'attached to matching session'"
-//!     "on_detach" "echo 'detached from matching session'"
+//! zj-hooker location="file:~/.config/zellij/plugins/zj-hooker.wasm" {
+//!     "pattern" "main"                # exact match
+//!     "pattern" "dev*"                # prefix match
+//!     "pattern" "*dev"                # suffix match
+//!     "pattern" "*dev*"               # contains match
+//!     "on_attach" "echo 'attached'"   # or "file:~/script.sh"
+//!     "on_detach" "echo 'detached'"   # or "file:~/script.sh"
+//!     "attach_mode" "interactive"     # optional: "interactive/background(default)"
 //! }
 //! ```
 //!
+//! # Interactive vs Background
+//!
+//! Note: on_attach runs in "background" mode by default (non-interactive)
+//!       Use "attach_mode" "interactive" to open a floating pane (supports sudo, etc.)
+//!       If command contains "sudo", automatically uses interactive mode
+//!       Use "file:/path/to/script.sh" to run a script file
+
 use std::collections::BTreeMap;
+use std::path::PathBuf;
+
 use zellij_tile::prelude::*;
 
 static ON_ATTACH_KEY: &str = "on_attach";
 static ON_DETACH_KEY: &str = "on_detach";
-static SESSION_KEY: &str = "session_pattern";
+static PATTERN_KEY: &str = "pattern";
+static ATTACH_MODE_KEY: &str = "attach_mode";
 
 #[derive(Default)]
 struct State {
+    is_attached: bool,
     on_attach: Option<String>,
     on_detach: Option<String>,
-    session_pattern: Option<String>,
-    client_count: usize,
+    pattern: Option<String>,
+    attach_mode: AttachMode,
+    attach_pane_id: Option<u32>,
+    pane_manifest: Option<PaneManifest>,
+}
+
+#[derive(Default, Clone, Copy, PartialEq, Debug)]
+enum AttachMode {
+    #[default]
+    Background,
+    Interactive,
 }
 
 register_plugin!(State);
 
 impl ZellijPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
-        request_permission(&[PermissionType::RunCommands, PermissionType::ReadApplicationState]);
+        request_permission(&[
+            PermissionType::RunCommands,
+            PermissionType::ReadApplicationState,
+            PermissionType::ChangeApplicationState,
+        ]);
 
         self.on_attach = configuration.get(ON_ATTACH_KEY).cloned();
         self.on_detach = configuration.get(ON_DETACH_KEY).cloned();
-        self.session_pattern = configuration.get(SESSION_KEY).cloned();
+        self.pattern = configuration.get(PATTERN_KEY).cloned();
 
-        eprintln!("zj-hooker: load called, on_attach={:?}, on_detach={:?}, pattern={:?}", 
-            self.on_attach, self.on_detach, self.session_pattern);
+        if let Some(mode) = configuration.get(ATTACH_MODE_KEY) {
+            self.attach_mode = match mode.as_str() {
+                "interactive" => AttachMode::Interactive,
+                _ => AttachMode::Background,
+            };
+        }
 
-        subscribe(&[EventType::ListClients, EventType::BeforeClose, EventType::Visible, EventType::RunCommandResult]);
+        subscribe(&[
+            EventType::SessionUpdate,
+            EventType::PaneUpdate,
+            EventType::RunCommandResult,
+            EventType::BeforeClose,
+        ]);
+        eprintln!(
+            "[zj-hooker] loaded: on_attach={:?}, on_detach={:?}, pattern={:?}, attach_mode={:?}",
+            self.on_attach, self.on_detach, self.pattern, self.attach_mode
+        );
     }
 
     fn update(&mut self, event: Event) -> bool {
         match event {
-            Event::ListClients(clients) => {
-                let current_count = clients.len();
-                eprintln!("zj-hooker: ListClients event, count: {}", current_count);
-
-                let was_empty = self.client_count == 0;
-                let client_joined = current_count > self.client_count;
-
-                if was_empty || client_joined {
-                    eprintln!(
-                        "zj-hooker: Client attached (was_empty={}, joined={})",
-                        was_empty, client_joined
-                    );
-
-                    let current_session = std::env::var("ZELLIJ_SESSION_NAME").unwrap_or_default();
-                    eprintln!("zj-hooker: Current session: {}", current_session);
-
-                    if !current_session.is_empty() {
-                        if let Some(ref pattern) = self.session_pattern {
-                            let matches = self.matches_pattern(&current_session, pattern);
-                            eprintln!("zj-hooker: Pattern '{}' matches: {}", pattern, matches);
-                            if matches && let Some(ref cmd) = self.on_attach {
-                                eprintln!("zj-hooker: Running on_attach: {}", cmd);
-                                self.run_command(cmd);
+            Event::SessionUpdate(sessions, _) => {
+                if let Some(session) = sessions.iter().find(|s| s.is_current_session) {
+                    let client_count = session.connected_clients;
+                    match (client_count, self.is_attached) {
+                        (0, true) => {
+                            self.is_attached = false;
+                            if let Some(cmd) = self.on_detach.clone() {
+                                self.run_command_detach(&cmd);
                             }
-                        } else if let Some(ref cmd) = self.on_attach {
-                            eprintln!("zj-hooker: Running on_attach: {}", cmd);
-                            self.run_command(cmd);
+                            self.attach_pane_id = None;
                         }
+                        (n, false) if n > 0 => {
+                            self.is_attached = true;
+                            self.attach_pane_id = None;
+                            if let Some(ref pattern) = self.pattern
+                                && self.matches_pattern(&session.name, pattern)
+                                && let Some(cmd) = self.on_attach.clone()
+                            {
+                                self.run_command_attach(&cmd);
+                            }
+                        }
+                        _ => {}
                     }
                 }
-
-                self.client_count = current_count;
+            }
+            Event::PaneUpdate(manifest) => {
+                self.pane_manifest = Some(manifest.clone());
+                if let Some(ref attach_cmd) = self.on_attach
+                    && self.attach_pane_id.is_none()
+                    && let Some(id) = self.find_pane_by_command(&manifest, attach_cmd)
+                {
+                    self.attach_pane_id = Some(id);
+                }
             }
             Event::BeforeClose => {
-                eprintln!("zj-hooker: BeforeClose event");
-                let current_session = std::env::var("ZELLIJ_SESSION_NAME").unwrap_or_default();
-
-                if let Some(ref pattern) = self.session_pattern {
-                    if !current_session.is_empty() {
-                        let matches = self.matches_pattern(&current_session, pattern);
-                        if matches && let Some(ref cmd) = self.on_detach {
-                            eprintln!("zj-hooker: Running on_detach: {}", cmd);
-                            self.run_command(cmd);
-                        }
-                    }
-                } else if let Some(ref cmd) = self.on_detach {
-                    eprintln!("zj-hooker: Running on_detach: {}", cmd);
-                    self.run_command(cmd);
+                if self.is_attached
+                    && let Some(cmd) = self.on_detach.clone()
+                {
+                    self.run_command_detach(&cmd);
                 }
             }
             _ => {}
@@ -105,17 +133,6 @@ impl ZellijPlugin for State {
 
     fn render(&mut self, _rows: usize, _cols: usize) {
         println!(" zj-hooker ");
-        if let Some(ref sessions) = self.session_pattern {
-            println!(" sessions: {}", sessions);
-        }
-        if let Some(ref on_attach) = self.on_attach {
-            println!(" on_attach: {}", on_attach);
-        }
-        if let Some(ref on_detach) = self.on_detach {
-            println!(" on_detach: {}", on_detach);
-        }
-        println!();
-        println!(" Waiting for attach/detach events... ");
     }
 }
 
@@ -133,26 +150,81 @@ impl State {
         }
     }
 
-    fn run_command(&self, cmd: &str) {
-        eprintln!("zj-hooker: run_command called with: {}", cmd);
+    fn resolve_command(&self, cmd: &str) -> String {
+        if let Some(path) = cmd.strip_prefix("file:") {
+            format!("bash {}", path)
+        } else {
+            cmd.to_string()
+        }
+    }
 
-        let parts: Vec<&str> = cmd.split_whitespace().collect();
-        if parts.is_empty() {
-            eprintln!("zj-hooker: command is empty");
+    fn run_command_attach(&mut self, cmd: &str) {
+        let cmd = self.resolve_command(cmd);
+
+        let mode = if cmd.starts_with("bash ") && cmd.contains(".sh") || cmd.contains("sudo") {
+            AttachMode::Interactive
+        } else {
+            self.attach_mode
+        };
+        eprintln!("[zj-hooker] run cmd on_attach: {cmd} mode={:?}", mode);
+
+        if let Some(pane_id) = self.attach_pane_id {
+            eprintln!("[zj-hooker] rerunning pane {}", pane_id);
+            rerun_command_pane(pane_id);
             return;
         }
 
-        let (program, args) = parts.split_first().expect("empty command");
-        eprintln!(
-            "zj-hooker: opening pane with program: {}, args: {:?}",
-            program, args
-        );
+        if let Some(ref manifest) = self.pane_manifest
+            && let Some(existing_id) = self.find_pane_by_command(manifest, &cmd)
+        {
+            eprintln!("[zj-hooker] reusing existing pane {}", existing_id);
+            self.attach_pane_id = Some(existing_id);
+            rerun_command_pane(existing_id);
+            return;
+        }
 
-        open_command_pane_floating(
-            CommandToRun::new_with_args(program, args.to_vec()),
-            None,
-            BTreeMap::new(),
-        );
-        eprintln!("zj-hooker: open_command_pane_floating called");
+        if mode == AttachMode::Background {
+            let parts: Vec<&str> = cmd.split_whitespace().collect();
+            if !parts.is_empty() {
+                run_command(&parts, BTreeMap::new());
+            }
+            return;
+        }
+
+        eprintln!("[zj-hooker] using interactive pane");
+        let parts: Vec<&str> = cmd.split_whitespace().collect();
+        if parts.is_empty() {
+            return;
+        }
+        let (command, args) = parts.split_at(1);
+        let cmd_struct = CommandToRun {
+            path: PathBuf::from(command[0]),
+            args: args.iter().map(|s| s.to_string()).collect(),
+            cwd: None,
+        };
+        open_command_pane_floating(cmd_struct, None, BTreeMap::new());
+    }
+
+    fn run_command_detach(&self, cmd: &str) {
+        let cmd = self.resolve_command(cmd);
+        eprintln!("[zj-hooker] run cmd on_detach: {cmd}");
+        let parts: Vec<&str> = cmd.split_whitespace().collect();
+        if parts.is_empty() {
+            return;
+        }
+        run_command(&parts, BTreeMap::new());
+    }
+
+    fn find_pane_by_command(&self, manifest: &PaneManifest, cmd: &str) -> Option<u32> {
+        for panes in manifest.panes.values() {
+            for pane in panes {
+                if let Some(ref terminal_command) = pane.terminal_command
+                    && terminal_command.contains(cmd)
+                {
+                    return Some(pane.id);
+                }
+            }
+        }
+        None
     }
 }

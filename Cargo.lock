@@ -3677,10 +3677,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "zj-session-hook"
-version = "0.1.0"
+name = "zj-hooker"
+version = "0.1.1"
 dependencies = [
- "uuid",
  "zellij-tile",
 ]
 

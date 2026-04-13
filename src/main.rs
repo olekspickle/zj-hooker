@@ -2,6 +2,8 @@
 //! This is a plugin for [zellij <3](https://github.com/zellij-org/zellij) that allows you to run
 //! commands on session attach and detach.
 //!
+//! https://github.com/user-attachments/assets/e273f850-9d3c-4aa3-81fa-855f02399d9c
+//!
 //! # Example configuration
 //! ```kdl
 //! # ~/.config/zellij/config.kdl

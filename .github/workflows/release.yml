@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  TOOLCHAIN: 1.94.1
+  TOOLCHAIN: 1.91.0
 
 jobs:
   build-release:
@@ -49,7 +49,7 @@ jobs:
           WASI_SDK_PATH: /opt/wasi-sdk
 
       - name: Build release binary
-        run: cargo build --release
+        run: cargo build --target wasm32-wasip1 --release
 
       - name: Generate a changelog
         uses: orhun/git-cliff-action@c93ef52f3d0ddcdcc9bd5447d98d458a11cd4f72 # v3

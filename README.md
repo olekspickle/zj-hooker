@@ -13,13 +13,13 @@ https://github.com/user-attachments/assets/e273f850-9d3c-4aa3-81fa-855f02399d9c
 plugins {
 ...
     zj-hooker location="file:~/.config/zellij/plugins/zj-hooker.wasm" {
-        "pattern" "main"                # exact match
-        "pattern" "dev*"                # prefix match
-        "pattern" "*dev"                # suffix match
-        "pattern" "*dev*"               # contains match
-        "on_attach" "echo 'attached'"   # or "file:~/on_attach.sh"
-        "on_detach" "echo 'detached'"   # or "file:~/on_detach.sh"
-        "attach_mode" "interactive"     # optional: "interactive/background(default)"
+        pattern "main"                # exact match
+        pattern "dev*"                # prefix match
+        pattern "*dev"                # suffix match
+        pattern "*dev*"               # contains match
+        on_attach "echo 'attached'"   # or "file:~/on_attach.sh"
+        on_detach "echo 'detached'"   # or "file:~/on_detach.sh"
+        attach_mode "interactive"     # optional: "interactive/background(default)"
     }
 ...
 }

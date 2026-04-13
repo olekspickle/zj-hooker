@@ -171,10 +171,6 @@ impl ZellijPlugin for State {
         }
         true
     }
-
-    fn render(&mut self, _rows: usize, _cols: usize) {
-        println!(" zj-hooker ");
-    }
 }
 
 impl State {

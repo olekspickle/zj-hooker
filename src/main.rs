@@ -18,6 +18,7 @@
 //!         on_attach "echo 'attached'"   # or "file:~/on_attach.sh"
 //!         on_detach "echo 'detached'"   # or "file:~/on_detach.sh"
 //!         attach_mode "interactive"     # optional: "interactive/background(default)"
+//!         hidden "true"                 # optional: hide pane on load (forces background mode)
 //!     }
 //! ...
 //! }
@@ -80,17 +81,22 @@ static ON_ATTACH_KEY: &str = "on_attach";
 static ON_DETACH_KEY: &str = "on_detach";
 static PATTERN_KEY: &str = "pattern";
 static ATTACH_MODE_KEY: &str = "attach_mode";
+static HIDDEN_KEY: &str = "hidden";
 
 #[derive(Default)]
 struct State {
-    is_attached: bool,
+    // config
+    session_name: Option<String>,
     on_attach: Option<String>,
     on_detach: Option<String>,
     pattern: Option<String>,
+    hidden: bool,
+
+    // state etc
+    attached: bool,
     attach_mode: AttachMode,
     attach_pane_id: Option<u32>,
     pane_manifest: Option<PaneManifest>,
-    session_name: Option<String>,
     last_action: Option<String>,
 }
 
@@ -122,6 +128,13 @@ impl ZellijPlugin for State {
             };
         }
 
+        if let Some(val) = configuration.get(HIDDEN_KEY) {
+            self.hidden = val == "true";
+        }
+        if self.hidden {
+            zellij_tile::shim::hide_self();
+        }
+
         subscribe(&[
             EventType::SessionUpdate,
             EventType::PaneUpdate,
@@ -130,8 +143,8 @@ impl ZellijPlugin for State {
             EventType::Key,
         ]);
         eprintln!(
-            "[zj-hooker] loaded: on_attach={:?}, on_detach={:?}, pattern={:?}, attach_mode={:?}",
-            self.on_attach, self.on_detach, self.pattern, self.attach_mode
+            "[zj-hooker] loaded: on_attach={:?}, on_detach={:?}, pattern={:?}, attach_mode={:?}, hidden={:?}",
+            self.on_attach, self.on_detach, self.pattern, self.attach_mode, self.hidden
         );
     }
 
@@ -141,24 +154,22 @@ impl ZellijPlugin for State {
                 if let Some(session) = sessions.iter().find(|s| s.is_current_session) {
                     self.session_name = Some(session.name.clone());
                     let client_count = session.connected_clients;
-                    match (client_count, self.is_attached) {
+                    match (client_count, self.attached) {
                         (0, true) => {
-                            self.is_attached = false;
+                            self.attached = false;
+                            self.attach_pane_id = None;
                             if let Some(cmd) = self.on_detach.clone() {
                                 self.run_command_detach(&cmd);
-                                self.last_action = Some(format!("on_detach: {}", cmd));
                             }
-                            self.attach_pane_id = None;
                         }
                         (n, false) if n > 0 => {
-                            self.is_attached = true;
+                            self.attached = true;
                             self.attach_pane_id = None;
                             if let Some(ref pattern) = self.pattern
                                 && self.matches_pattern(&session.name, pattern)
                                 && let Some(cmd) = self.on_attach.clone()
                             {
                                 self.run_command_attach(&cmd);
-                                self.last_action = Some(format!("on_attach: {}", cmd));
                             }
                         }
                         _ => {}
@@ -177,11 +188,10 @@ impl ZellijPlugin for State {
                 true
             }
             Event::BeforeClose => {
-                if self.is_attached
+                if self.attached
                     && let Some(cmd) = self.on_detach.clone()
                 {
                     self.run_command_detach(&cmd);
-                    self.last_action = Some(format!("on_detach: {}", cmd));
                 }
                 true
             }
@@ -197,7 +207,7 @@ impl ZellijPlugin for State {
         out.push_str("\x1b[7m zj-hooker \x1b[0m\n\n");
         out.push_str(&format!(
             " Status: {}\n",
-            if self.is_attached {
+            if self.attached {
                 "\x1b[32m● attached\x1b[0m"
             } else {
                 "\x1b[31m○ detached\x1b[0m"
@@ -219,10 +229,12 @@ impl ZellijPlugin for State {
             out.push_str(&format!("   pattern   : {}\n", p));
         }
         out.push_str(&format!("   mode      : {:?}\n", self.attach_mode));
+        out.push_str(&format!("   hidden    : {}\n", self.hidden));
         out.push_str("\n Commands:\n");
         out.push_str("   a : run on_attach\n");
         out.push_str("   d : run on_detach\n");
         out.push_str("   r : refresh\n");
+        out.push_str("   h : hide pane\n");
         out.push_str("   q : close\n");
         if let Some(ref action) = self.last_action {
             out.push_str(&format!("\n Last: {}\n", action));
@@ -241,7 +253,6 @@ impl State {
             BareKey::Char('a') | BareKey::Char('A') => {
                 if let Some(cmd) = self.on_attach.clone() {
                     self.run_command_attach(&cmd);
-                    self.last_action = Some(format!("▶ on_attach: {}", cmd));
                 } else {
                     self.last_action = Some("on_attach: not configured".into());
                 }
@@ -250,13 +261,16 @@ impl State {
             BareKey::Char('d') | BareKey::Char('D') => {
                 if let Some(cmd) = self.on_detach.clone() {
                     self.run_command_detach(&cmd);
-                    self.last_action = Some(format!("▶ on_detach: {}", cmd));
                 } else {
                     self.last_action = Some("on_detach: not configured".into());
                 }
                 true
             }
             BareKey::Char('r') | BareKey::Char('R') => true,
+            BareKey::Char('h') | BareKey::Char('H') => {
+                zellij_tile::shim::hide_self();
+                true
+            }
             BareKey::Char('q') | BareKey::Char('Q') | BareKey::Esc => {
                 close_self();
                 false
@@ -289,12 +303,17 @@ impl State {
     fn run_command_attach(&mut self, cmd: &str) {
         let cmd = self.resolve_command(cmd);
 
-        let mode = if cmd.starts_with("bash ") && cmd.contains(".sh") || cmd.contains("sudo") {
+        let mode = if self.hidden {
+            AttachMode::Background
+        } else if cmd.starts_with("bash ") && cmd.contains(".sh") || cmd.contains("sudo") {
             AttachMode::Interactive
         } else {
             self.attach_mode
         };
-        eprintln!("[zj-hooker] run cmd on_attach: {cmd} mode={:?}", mode);
+        eprintln!(
+            "[zj-hooker] run cmd on_attach: {cmd} mode={:?} hidden={}",
+            mode, self.hidden
+        );
 
         if let Some(pane_id) = self.attach_pane_id {
             eprintln!("[zj-hooker] rerunning pane {}", pane_id);
@@ -305,7 +324,6 @@ impl State {
         if let Some(ref manifest) = self.pane_manifest
             && let Some(existing_id) = self.find_pane_by_command(manifest, &cmd)
         {
-            eprintln!("[zj-hooker] reusing existing pane {}", existing_id);
             self.attach_pane_id = Some(existing_id);
             rerun_command_pane(existing_id);
             return;
@@ -316,10 +334,10 @@ impl State {
             if !parts.is_empty() {
                 run_command(&parts, BTreeMap::new());
             }
+            self.last_action = Some(format!("▶ on_attach: {}", cmd));
             return;
         }
 
-        eprintln!("[zj-hooker] using interactive pane");
         let parts: Vec<&str> = cmd.split_whitespace().collect();
         if parts.is_empty() {
             return;
@@ -330,10 +348,14 @@ impl State {
             args: args.iter().map(|s| s.to_string()).collect(),
             cwd: None,
         };
-        open_command_pane_floating(cmd_struct, None, BTreeMap::new());
+
+        if !self.hidden && self.attach_pane_id.is_none() {
+            open_command_pane_floating(cmd_struct, None, BTreeMap::new());
+        }
+        self.last_action = Some(format!("▶ on_attach: {}", cmd));
     }
 
-    fn run_command_detach(&self, cmd: &str) {
+    fn run_command_detach(&mut self, cmd: &str) {
         let cmd = self.resolve_command(cmd);
         eprintln!("[zj-hooker] run cmd on_detach: {cmd}");
         let parts: Vec<&str> = cmd.split_whitespace().collect();
@@ -341,6 +363,7 @@ impl State {
             return;
         }
         run_command(&parts, BTreeMap::new());
+        self.last_action = Some(format!("▶ on_detach: {}", cmd));
     }
 
     fn find_pane_by_command(&self, manifest: &PaneManifest, cmd: &str) -> Option<u32> {

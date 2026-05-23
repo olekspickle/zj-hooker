@@ -20,6 +20,7 @@ plugins {
         on_attach "echo 'attached'"   # or "file:~/on_attach.sh"
         on_detach "echo 'detached'"   # or "file:~/on_detach.sh"
         attach_mode "interactive"     # optional: "interactive/background(default)"
+        hidden "true"                 # optional: hide pane on load (forces background mode)
     }
 ...
 }

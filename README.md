@@ -24,7 +24,7 @@ plugins {
 ...
 }
 
-# my-layout.kdl
+# launch with my-layout.kdl
 layout {
     default_tab_template {
         pane size=1 borderless=true {
@@ -39,16 +39,24 @@ layout {
     tab name="zellij <3" cwd="~/" {
         floating_panes {
             pane cwd="~/" {
-                x "50%"
-                y "50%"
-                width "50%"
-                height "50%"
+                x "70%"
+                y "5%"
+                width "30%"
+                height "40%"
                 plugin location="zj-hooker"
             }
         }
-        pane
     }
 }
+
+# or add a manual launch for ui in your config.kdl
+ ...
+ bind "Alt c" {
+     LaunchOrFocusPlugin "zj-hooker" {
+         floating true
+     };
+ }
+ ...
 
 ```
 

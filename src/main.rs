@@ -22,7 +22,7 @@
 //! ...
 //! }
 //!
-//! # my-layout.kdl
+//! # launch with my-layout.kdl
 //! layout {
 //!     default_tab_template {
 //!         pane size=1 borderless=true {
@@ -37,16 +37,24 @@
 //!     tab name="zellij <3" cwd="~/" {
 //!         floating_panes {
 //!             pane cwd="~/" {
-//!                 x "50%"
-//!                 y "50%"
-//!                 width "50%"
-//!                 height "50%"
+//!                 x "70%"
+//!                 y "5%"
+//!                 width "30%"
+//!                 height "40%"
 //!                 plugin location="zj-hooker"
 //!             }
 //!         }
-//!         pane
 //!     }
 //! }
+//!
+//! # or add a manual launch for ui in your config.kdl
+//!  ...
+//!  bind "Alt c" {
+//!      LaunchOrFocusPlugin "zj-hooker" {
+//!          floating true
+//!      };
+//!  }
+//!  ...
 //!
 //! ```
 //!
@@ -82,6 +90,8 @@ struct State {
     attach_mode: AttachMode,
     attach_pane_id: Option<u32>,
     pane_manifest: Option<PaneManifest>,
+    session_name: Option<String>,
+    last_action: Option<String>,
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Debug)]
@@ -117,6 +127,7 @@ impl ZellijPlugin for State {
             EventType::PaneUpdate,
             EventType::RunCommandResult,
             EventType::BeforeClose,
+            EventType::Key,
         ]);
         eprintln!(
             "[zj-hooker] loaded: on_attach={:?}, on_detach={:?}, pattern={:?}, attach_mode={:?}",
@@ -128,12 +139,14 @@ impl ZellijPlugin for State {
         match event {
             Event::SessionUpdate(sessions, _) => {
                 if let Some(session) = sessions.iter().find(|s| s.is_current_session) {
+                    self.session_name = Some(session.name.clone());
                     let client_count = session.connected_clients;
                     match (client_count, self.is_attached) {
                         (0, true) => {
                             self.is_attached = false;
                             if let Some(cmd) = self.on_detach.clone() {
                                 self.run_command_detach(&cmd);
+                                self.last_action = Some(format!("on_detach: {}", cmd));
                             }
                             self.attach_pane_id = None;
                         }
@@ -145,11 +158,13 @@ impl ZellijPlugin for State {
                                 && let Some(cmd) = self.on_attach.clone()
                             {
                                 self.run_command_attach(&cmd);
+                                self.last_action = Some(format!("on_attach: {}", cmd));
                             }
                         }
                         _ => {}
                     }
                 }
+                true
             }
             Event::PaneUpdate(manifest) => {
                 self.pane_manifest = Some(manifest.clone());
@@ -159,21 +174,97 @@ impl ZellijPlugin for State {
                 {
                     self.attach_pane_id = Some(id);
                 }
+                true
             }
             Event::BeforeClose => {
                 if self.is_attached
                     && let Some(cmd) = self.on_detach.clone()
                 {
                     self.run_command_detach(&cmd);
+                    self.last_action = Some(format!("on_detach: {}", cmd));
                 }
+                true
             }
-            _ => {}
+            Event::RunCommandResult(..) => true,
+            Event::Key(key) => self.handle_key(key),
+            _ => false,
         }
-        true
+    }
+
+    fn render(&mut self, _rows: usize, _cols: usize) {
+        let mut out = String::new();
+        out.push_str("\x1b[2J\x1b[H");
+        out.push_str("\x1b[7m zj-hooker \x1b[0m\n\n");
+        out.push_str(&format!(
+            " Status: {}\n",
+            if self.is_attached {
+                "\x1b[32m● attached\x1b[0m"
+            } else {
+                "\x1b[31m○ detached\x1b[0m"
+            }
+        ));
+        if let Some(ref name) = self.session_name {
+            out.push_str(&format!(" Session: {}\n", name));
+        }
+        out.push_str("\n Hooks:\n");
+        out.push_str(&format!(
+            "   on_attach : {}\n",
+            self.on_attach.as_deref().unwrap_or("(not configured)")
+        ));
+        out.push_str(&format!(
+            "   on_detach : {}\n",
+            self.on_detach.as_deref().unwrap_or("(not configured)")
+        ));
+        if let Some(ref p) = self.pattern {
+            out.push_str(&format!("   pattern   : {}\n", p));
+        }
+        out.push_str(&format!("   mode      : {:?}\n", self.attach_mode));
+        out.push_str("\n Commands:\n");
+        out.push_str("   a : run on_attach\n");
+        out.push_str("   d : run on_detach\n");
+        out.push_str("   r : refresh\n");
+        out.push_str("   q : close\n");
+        if let Some(ref action) = self.last_action {
+            out.push_str(&format!("\n Last: {}\n", action));
+        }
+        print!("{}", out);
     }
 }
 
 impl State {
+    fn handle_key(&mut self, key: KeyWithModifier) -> bool {
+        if key.bare_key == BareKey::Char('c') && key.key_modifiers.contains(&KeyModifier::Ctrl) {
+            close_self();
+            return false;
+        }
+        match key.bare_key {
+            BareKey::Char('a') | BareKey::Char('A') => {
+                if let Some(cmd) = self.on_attach.clone() {
+                    self.run_command_attach(&cmd);
+                    self.last_action = Some(format!("▶ on_attach: {}", cmd));
+                } else {
+                    self.last_action = Some("on_attach: not configured".into());
+                }
+                true
+            }
+            BareKey::Char('d') | BareKey::Char('D') => {
+                if let Some(cmd) = self.on_detach.clone() {
+                    self.run_command_detach(&cmd);
+                    self.last_action = Some(format!("▶ on_detach: {}", cmd));
+                } else {
+                    self.last_action = Some("on_detach: not configured".into());
+                }
+                true
+            }
+            BareKey::Char('r') | BareKey::Char('R') => true,
+            BareKey::Char('q') | BareKey::Char('Q') | BareKey::Esc => {
+                close_self();
+                false
+            }
+            _ => false,
+        }
+    }
+
     fn matches_pattern(&self, session_name: &str, pattern: &str) -> bool {
         if pattern.starts_with('*') && pattern.ends_with('*') {
             let middle = &pattern[1..pattern.len() - 1];

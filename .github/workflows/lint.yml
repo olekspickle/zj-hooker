@@ -28,14 +28,14 @@ jobs:
           WASI_SDK_PATH: /opt/wasi-sdk
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # stable
         with:
           toolchain: ${{ env.TOOLCHAIN }}
           target: wasm32-wasip1
           components: clippy,rustfmt
 
       - name: Run Clippy
-        uses: clechasseur/rs-clippy-check@b418607012136b974dc5c880877df721d630bbc1 # v3
+        uses: clechasseur/rs-clippy-check@62ad100473a5e6513e86407b859091115ec89ae3
         with:
           args: --all-features
           toolchain: ${{ env.TOOLCHAIN }}

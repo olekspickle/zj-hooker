@@ -35,7 +35,7 @@ jobs:
           components: clippy,rustfmt
 
       - name: Run Clippy
-        uses: clechasseur/rs-clippy-check@62ad100473a5e6513e86407b859091115ec89ae3
+        uses: clechasseur/rs-clippy-check@d626afd6670c78ecef6c7872e1c9e1221065d5c5
         with:
           args: --all-features
           toolchain: ${{ env.TOOLCHAIN }}
